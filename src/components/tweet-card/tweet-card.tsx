@@ -13,6 +13,7 @@ import TweetDownloadAgainBtn from '@/components/tweet-card/tweet-download-again-
 import TweetPlayBtn from '@/components/tweet-card/tweet-play-btn'
 import TweetDownloadBtn from '@/components/tweet-card/tweet-download-btn'
 import TweetShare from '@/components/tweet-card/tweet-share'
+import TweetTranscribeBtn from '@/components/tweet-card/tweet-transcribe-btn'
 
 const TweetCard = ({ tweet, download, email }: TweetCardType) => {
   if (!tweet) {
@@ -78,6 +79,7 @@ const TweetCard = ({ tweet, download, email }: TweetCardType) => {
               />
               <TweetPlayBtn filename={filename} />
               <TweetDownloadBtn filename={filename} />
+              <TweetTranscribeBtn downloadId={id} />
             </div>
           )}
 

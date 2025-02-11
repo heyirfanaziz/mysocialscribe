@@ -1,12 +1,14 @@
 // import { unlink } from 'fs/promises'
 import { NextRequest, NextResponse } from 'next/server'
-
+import { createClient } from '@/db/supabase/server'
 import { getDownloadById, softDeleteDownload } from '@/db/supabase/services/downloads.service' // import { getFilePath } from '@/utils/getFilePath'
 
 // import { getFilePath } from '@/utils/getFilePath'
 
 export async function DELETE(request: NextRequest) {
   try {
+    const supabase = await createClient()
+    
     const { searchParams } = new URL(request.url)
     const id = searchParams.get('id')
 
@@ -17,13 +19,18 @@ export async function DELETE(request: NextRequest) {
     // Get download record
     const dl = await getDownloadById({ id })
 
-    // if filename is present, delete the file
-    // if (dl.filename) {
-    //   const filePath = getFilePath(dl.filename)
-    //   await unlink(filePath).catch(() => {})
-    // }
+    // Delete file from Supabase Storage if exists
+    if (dl.filename) {
+      const { error } = await supabase.storage
+        .from('space-audio')
+        .remove([dl.filename])
+      
+      if (error) {
+        console.error('Storage deletion error:', error)
+      }
+    }
 
-    // Delete download record
+    // Soft delete download record
     await softDeleteDownload(dl.id)
 
     return NextResponse.json(

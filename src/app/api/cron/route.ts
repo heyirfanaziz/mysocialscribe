@@ -1,17 +1,24 @@
 import { NextResponse } from 'next/server'
-import { unlink } from 'fs/promises'
-import path from 'path'
-
+import { createClient } from '@/db/supabase/server'
 import { getRecentDownloads, removeCachedDownload } from '@/db/supabase/services/downloads.service'
 import { DlType } from '@/types/DownlodsType'
 
 export async function GET() {
   try {
+    const supabase = await createClient()
+    
     const oldDownloads = await getRecentDownloads()
 
     const cleanupTasks = oldDownloads.map(async (download: DlType) => {
-      const filePath = path.join(process.cwd(), 'public', 'downloads', download.filename!)
-      await Promise.all([unlink(filePath).catch(() => {}), removeCachedDownload(download.id)])
+      if (download.filename) {
+        // Remove file from Supabase Storage
+        await supabase.storage
+          .from('space-audio')
+          .remove([download.filename])
+          .catch(console.error)
+      }
+      
+      await removeCachedDownload(download.id)
     })
 
     await Promise.all(cleanupTasks)

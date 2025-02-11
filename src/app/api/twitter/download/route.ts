@@ -1,7 +1,8 @@
 import { spawn } from 'child_process'
-import { writeFile } from 'fs/promises'
 import { NextRequest, NextResponse } from 'next/server'
 import path from 'path'
+import fs from 'fs'
+import { createClient } from '@/db/supabase/server'
 
 import {
   checkIfDownloadExists,
@@ -31,34 +32,37 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
   }
 
   try {
+    const supabase = await createClient()
+    
     const { dl, startDownloading } = await download({
       space_url,
       user_id,
       download_id,
     })
-    // If we're not starting a new download, return the existing download URL
+
     if (!startDownloading) {
-      const dlUrl = `${process.env.NEXT_PUBLIC_BASE_URL}/downloads/${dl.filename}`
+      const { data: { publicUrl } } = supabase.storage
+        .from('space-audio')
+        .getPublicUrl(dl.filename!)
+        
       await sendDownloadEmail({
         to: email,
-        href: dlUrl,
-        downloadName: dlUrl,
+        href: publicUrl,
+        downloadName: dl.filename!,
       })
-      return NextResponse.json({ downloadUrl: dlUrl }, { status: 200 })
+      return NextResponse.json({ downloadUrl: publicUrl }, { status: 200 })
     }
 
     // If we're starting a new download, proceed with the download process
     const filename = `twitter_space_${crypto.randomUUID().slice(0, 8)}.mp3`
-    const filePath = path.join(process.cwd(), 'public', 'downloads', filename)
-
-    await writeFile(path.join(process.cwd(), 'public', 'downloads', '.gitkeep'), '')
+    const tempFilePath = path.join('/tmp', filename)
 
     return new Promise<NextResponse>((resolve) => {
       const ytDlpProcess = spawn(
         'yt-dlp',
         [
           '-o',
-          filePath,
+          tempFilePath,
           '-f',
           'bestaudio[ext=m4a]',
           '--extract-audio',
@@ -76,29 +80,69 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
       ytDlpProcess.on('close', async (code) => {
         if (code === 0) {
           try {
-            const dlUrl = `${process.env.NEXT_PUBLIC_BASE_URL}/downloads/` + filename
-            console.log('download space_url', dlUrl)
+            // 2. Read the temp file
+            const fileBuffer = fs.readFileSync(tempFilePath)
+            
+            // 3. Upload to Supabase
+            const { data, error } = await supabase.storage
+              .from('space-audio')
+              .upload(`${user_id}/${filename}`, fileBuffer, {
+                contentType: 'audio/mpeg',
+                cacheControl: '3600',
+                upsert: false
+              })
 
-            // Save the download record to the database, and send the email to the user
-            await Promise.all([
-              updateOrInsertDownload(
-                {
-                  filename,
-                  status: 'completed',
-                  is_deleted: false,
-                  is_archived: false,
-                },
-                dl.id
-              ),
-              sendDownloadEmail({
-                to: email,
-                href: dlUrl,
-                downloadName: filename,
+            if (error) {
+              console.error('Supabase upload error:', error)
+              throw error
+            }
+
+            // 4. Get the public URL
+            const { data: { publicUrl } } = supabase.storage
+              .from('space-audio')
+              .getPublicUrl(`${user_id}/${filename}`)
+
+            // 5. Clean up temp file
+            fs.unlinkSync(tempFilePath)
+
+            // 6. Update database, send email, and start transcription
+            await updateOrInsertDownload({
+              filename: `${user_id}/${filename}`,
+              status: 'completed',
+              is_deleted: false,
+              is_archived: false,
+            }, dl.id)
+
+            await sendDownloadEmail({
+              to: email,
+              href: publicUrl,
+              downloadName: filename,
+            })
+
+            // Start transcription in background
+            const transcribeResponse = await fetch(`${process.env.NEXT_PUBLIC_BASE_URL}/api/transcribe`, {
+              method: 'POST',
+              headers: {
+                'Content-Type': 'application/json',
+              },
+              body: JSON.stringify({
+                audioUrl: publicUrl,
+                downloadId: dl.id,
               }),
-            ])
-            resolve(NextResponse.json({ downloadUrl: dlUrl }, { status: 200 }))
-          } catch {
-            resolve(NextResponse.json({ error: 'Upload failed' }, { status: 501 }))
+            }).catch(error => {
+              console.error('Failed to start transcription:', error)
+              return null
+            })
+
+            if (transcribeResponse && !transcribeResponse.ok) {
+              const errorText = await transcribeResponse.text()
+              console.error('Transcription request failed:', errorText)
+            }
+
+            resolve(NextResponse.json({ downloadUrl: publicUrl }, { status: 200 }))
+          } catch (error) {
+            console.error('Final steps error:', error)
+            resolve(NextResponse.json({ error: 'Process failed' }, { status: 500 }))
           }
         } else {
           resolve(NextResponse.json({ error: 'Download failed' }, { status: 502 }))
